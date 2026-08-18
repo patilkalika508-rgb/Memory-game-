@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Flask + Three.js Tic-Tac-Toe</title>
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-dark text-light">
+
+    <nav class="navbar navbar-dark bg-black">
+        <div class="container">
+            <span class="navbar-brand mb-0 h1">⭕❌ 3D Tic-Tac-Toe — Flask + Three.js</span>
+        </div>
+    </nav>
+
+    <div class="container my-4">
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-3">
+                <div class="card bg-secondary bg-opacity-25 border-secondary text-center">
+                    <div class="card-body">
+                        <h6 class="card-subtitle text-muted mb-1">Current Turn</h6>
+                        <h3 id="turn-label" class="mb-0">X</h3>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="card bg-secondary bg-opacity-25 border-secondary text-center">
+                    <div class="card-body">
+                        <h6 class="card-subtitle text-muted mb-1">Score (X / O / Draw)</h6>
+                        <h5 id="score-label" class="mb-0">0 / 0 / 0</h5>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-3 d-grid">
+                <button id="restart-btn" class="btn btn-primary h-100">New Round</button>
+            </div>
+            <div class="col-md-3 d-grid">
+                <button id="rules-btn" class="btn btn-outline-light h-100" data-bs-toggle="modal" data-bs-target="#rulesModal">
+                    How to Play
+                </button>
+            </div>
+        </div>
+
+        <div id="result-alert" class="alert d-none" role="alert"></div>
+
+        <div class="card bg-secondary bg-opacity-10 border-secondary shadow">
+            <div class="card-body d-flex justify-content-center p-2">
+                <div id="scene-container" class="border border-secondary rounded"></div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Rules Modal -->
+    <div class="modal fade" id="rulesModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title">How to Play</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <ul class="mb-0">
+                        <li>Players take turns — X goes first, then O.</li>
+                        <li>Click an empty cell on the 3D board to place your mark.</li>
+                        <li>First to get 3 marks in a row (horizontally, vertically, or diagonally) wins.</li>
+                        <li>If all 9 cells fill with no winner, it's a draw.</li>
+                        <li>Click "New Round" to play again — the score keeps tallying.</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <!-- Three.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // ----- CONFIG -----
+        const WIDTH = 640;
+        const HEIGHT = 520;
+        const CELL_SIZE = 1.6;
+        const GAP = 0.15;
+        const BOARD_SPAN = CELL_SIZE * 3 + GAP * 2;
+
+        // ----- STATE -----
+        let scene, camera, renderer, raycaster, mouse;
+        let cells = []; // { row, col, mesh, mark, markMesh }
+        let board = Array(9).fill(null); // 'X' | 'O' | null
+        let currentPlayer = "X";
+        let gameOver = false;
+        let scores = { X: 0, O: 0, Draw: 0 };
+
+        const turnLabel = document.getElementById("turn-label");
+        const scoreLabel = document.getElementById("score-label");
+        const resultAlert = document.getElementById("result-alert");
+        const container = document.getElementById("scene-container");
+
+        const WIN_LINES = [
+            [0,1,2], [3,4,5], [6,7,8],
+            [0,3,6], [1,4,7], [2,5,8],
+            [0,4,8], [2,4,6]
+        ];
+
+        // ----- SCENE INIT -----
+        function initScene() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a1d20);
+
+            camera = new THREE.PerspectiveCamera(45, WIDTH / HEIGHT, 0.1, 1000);
+            camera.position.set(0, 6.5, 5.5);
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(WIDTH, HEIGHT);
+            container.innerHTML = "";
+            container.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+
+            const dirLight = new THREE.DirectionalLight(0xffffff, 0.7);
+            dirLight.position.set(5, 10, 7);
+            scene.add(dirLight);
+
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            renderer.domElement.addEventListener("click", onBoardClick);
+        }
+
+        // ----- BOARD GRID (cells) -----
+        function buildBoard() {
+            cells.forEach(c => {
+                scene.remove(c.mesh);
+                if (c.markMesh) scene.remove(c.markMesh);
+            });
+            cells = [];
+            board = Array(9).fill(null);
+
+            const cellMat = new THREE.MeshStandardMaterial({ color: 0x343a40 });
+            const offset = (CELL_SIZE + GAP);
+            const start = -offset; // for 3x3 centered at 0
+
+            let index = 0;
+            for (let row = 0; row < 3; row++) {
+                for (let col = 0; col < 3; col++) {
+                    const geometry = new THREE.BoxGeometry(CELL_SIZE, 0.2, CELL_SIZE);
+                    const mesh = new THREE.Mesh(geometry, cellMat.clone());
+                    mesh.position.set(start + col * offset, 0, start + row * offset);
+                    mesh.userData.index = index;
+                    scene.add(mesh);
+
+                    cells.push({ index: index, row: row, col: col, mesh: mesh, markMesh: null });
+                    index++;
+                }
+            }
+
+            // grid lines (thin boxes) for visual separation
+            const lineMat = new THREE.MeshStandardMaterial({ color: 0x0d6efd });
+            for (let i = 1; i < 3; i++) {
+                const vLine = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.25, BOARD_SPAN), lineMat);
+                vLine.position.set(start + (i - 0.5) * offset + GAP / 2, 0, 0);
+                scene.add(vLine);
+
+                const hLine = new THREE.Mesh(new THREE.BoxGeometry(BOARD_SPAN, 0.25, 0.05), lineMat);
+                hLine.position.set(0, 0, start + (i - 0.5) * offset + GAP / 2);
+                scene.add(hLine);
+            }
+        }
+
+        // ----- MARK CREATION -----
+        function createXMark() {
+            const group = new THREE.Group();
+            const mat = new THREE.MeshStandardMaterial({ color: 0xdc3545 });
+            const barGeom = new THREE.BoxGeometry(1.1, 0.15, 0.18);
+
+            const bar1 = new THREE.Mesh(barGeom, mat);
+            bar1.rotation.y = Math.PI / 4;
+            bar1.position.y = 0.2;
+            group.add(bar1);
+
+            const bar2 = new THREE.Mesh(barGeom, mat);
+            bar2.rotation.y = -Math.PI / 4;
+            bar2.position.y = 0.2;
+            group.add(bar2);
+
+            return group;
+        }
+
+        function createOMark() {
+            const mat = new THREE.MeshStandardMaterial({ color: 0x0dcaf0 });
+            const geometry = new THREE.TorusGeometry(0.5, 0.12, 16, 32);
+            const mesh = new THREE.Mesh(geometry, mat);
+            mesh.rotation.x = Math.PI / 2;
+            mesh.position.y = 0.2;
+            return mesh;
+        }
+
+        // ----- INTERACTION -----
+        function onBoardClick(event) {
+            if (gameOver) return;
+
+            const rect = renderer.domElement.getBoundingClientRect();
+            mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+            mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(cells.map(c => c.mesh));
+            if (intersects.length === 0) return;
+
+            const mesh = intersects[0].object;
+            const cell = cells.find(c => c.mesh === mesh);
+            if (!cell || board[cell.index] !== null) return;
+
+            placeMark(cell);
+        }
+
+        function placeMark(cell) {
+            board[cell.index] = currentPlayer;
+
+            const mark = currentPlayer === "X" ? createXMark() : createOMark();
+            mark.position.set(cell.mesh.position.x, 0.15, cell.mesh.position.z);
+            scene.add(mark);
+            cell.markMesh = mark;
+
+            const winInfo = checkWinner();
+            if (winInfo) {
+                highlightWin(winInfo.line);
+                scores[currentPlayer]++;
+                updateScoreLabel();
+                showResult(currentPlayer + " wins!", "alert-success");
+                gameOver = true;
+                return;
+            }
+
+            if (board.every(v => v !== null)) {
+                scores.Draw++;
+                updateScoreLabel();
+                showResult("It's a draw!", "alert-warning");
+                gameOver = true;
+                return;
+            }
+
+            currentPlayer = currentPlayer === "X" ? "O" : "X";
+            turnLabel.textContent = currentPlayer;
+        }
+
+        function checkWinner() {
+            for (const line of WIN_LINES) {
+                const [a, b, c] = line;
+                if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+                    return { winner: board[a], line: line };
+                }
+            }
+            return null;
+        }
+
+        function highlightWin(line) {
+            line.forEach(i => {
+                cells[i].mesh.material.color.setHex(0x198754);
+            });
+        }
+
+        function showResult(text, alertClass) {
+            resultAlert.classList.remove("d-none", "alert-success", "alert-warning", "alert-danger");
+            resultAlert.classList.add(alertClass);
+            resultAlert.textContent = text + " Click \"New Round\" to play again.";
+        }
+
+        function updateScoreLabel() {
+            scoreLabel.textContent = scores.X + " / " + scores.O + " / " + scores.Draw;
+        }
+
+        // ----- NEW ROUND -----
+        function newRound() {
+            currentPlayer = "X";
+            gameOver = false;
+            turnLabel.textContent = currentPlayer;
+            resultAlert.classList.add("d-none");
+            buildBoard();
+        }
+
+        // ----- RENDER LOOP -----
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+
+        // ----- EVENTS -----
+        document.getElementById("restart-btn").addEventListener("click", newRound);
+
+        // ----- START -----
+        initScene();
+        newRound();
+        animate();
+    </script>
+
+</body>
+</html>
